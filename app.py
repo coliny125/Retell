@@ -118,92 +118,84 @@ agent = RestaurantAgent()
 def retell_webhook():
     """Main webhook endpoint for RetellAI"""
     
-    data = request.json
-    
-    # Extract the function call details
-    function_name = data.get('function_name')
-    arguments = data.get('arguments', {})
-    
-    response_data = {
-        'response': '',
-        'success': True
-    }
-    
     try:
-        if function_name == 'search_restaurants':
-            location = arguments.get('location')
-            cuisine = arguments.get('cuisine')
-            
-            if not location:
-                response_data['response'] = "I need a location to search for restaurants. Could you please tell me which city or area you're interested in?"
-                response_data['success'] = False
-            else:
-                restaurants = agent.search_restaurants(location, cuisine)
-                
-                if restaurants:
-                    response_text = f"I found {len(restaurants)} restaurants"
-                    if cuisine:
-                        response_text += f" serving {cuisine} cuisine"
-                    response_text += f" in {location}. "
-                    
-                    for i, rest in enumerate(restaurants, 1):
-                        response_text += f"\n{i}. {rest['name']}"
-                        if rest.get('rating'):
-                            response_text += f" - {rest['rating']} stars"
-                        if rest.get('open_now') is not None:
-                            status = "open" if rest['open_now'] else "closed"
-                            response_text += f" - currently {status}"
-                    
-                    response_text += "\n\nWould you like more details about any of these restaurants?"
-                    response_data['response'] = response_text
-                else:
-                    response_data['response'] = f"I couldn't find any restaurants in {location}. Could you try a different location or be more specific?"
-                    response_data['success'] = False
+        data = request.json
         
-        elif function_name == 'get_restaurant_details':
-            restaurant_name = arguments.get('restaurant_name')
-            location = arguments.get('location')
-            
-            if not restaurant_name:
-                response_data['response'] = "Which restaurant would you like to know more about?"
-                response_data['success'] = False
-            else:
-                # First search for the restaurant to get its place_id
-                restaurants = agent.search_restaurants(location, restaurant_name)
-                
-                if restaurants:
-                    # Get details for the first match
-                    place_id = restaurants[0]['place_id']
-                    details = agent.get_restaurant_details(place_id)
-                    
-                    if details:
-                        response_text = agent.format_restaurant_info(details)
-                        
-                        if details.get('phone'):
-                            response_text += f"Their phone number is {details['phone']}. "
-                        
-                        if details.get('website'):
-                            response_text += "They have a website available. "
-                        
-                        response_text += "Would you like me to provide the phone number so you can make a reservation?"
-                        response_data['response'] = response_text
-                    else:
-                        response_data['response'] = "I couldn't get the details for that restaurant. Let me try searching again."
-                        response_data['success'] = False
-                else:
-                    response_data['response'] = f"I couldn't find {restaurant_name}. Could you provide more details or check the spelling?"
-                    response_data['success'] = False
+        # Log the incoming request for debugging
+        print(f"Incoming webhook data: {json.dumps(data, indent=2)}")
         
+        # RetellAI sends the function name and arguments directly in the request
+        # Based on your logs, it seems the structure might be flat
+        
+        # Check if this is a search_restaurants call
+        if 'location' in data and ('cuisine' in data or 'restaurant' in data):
+            location = data.get('location')
+            cuisine = data.get('cuisine')
+            
+            restaurants = agent.search_restaurants(location, cuisine)
+            
+            if restaurants:
+                response_text = f"I found {len(restaurants)} restaurants"
+                if cuisine:
+                    response_text += f" serving {cuisine} cuisine"
+                response_text += f" in {location}. "
+                
+                for i, rest in enumerate(restaurants, 1):
+                    response_text += f"\n{i}. {rest['name']}"
+                    if rest.get('rating'):
+                        response_text += f" - {rest['rating']} stars"
+                    if rest.get('open_now') is not None:
+                        status = "open" if rest['open_now'] else "closed"
+                        response_text += f" - currently {status}"
+                
+                response_text += "\n\nWould you like more details about any of these restaurants?"
+                return jsonify({'response': response_text})
+            else:
+                return jsonify({
+                    'response': f"I couldn't find any restaurants in {location}. Could you try a different location or be more specific?"
+                })
+        
+        # Check if this is a get_restaurant_details call
+        elif 'restaurant_name' in data:
+            restaurant_name = data.get('restaurant_name')
+            location = data.get('location', '')
+            
+            # Search for the restaurant
+            restaurants = agent.search_restaurants(location, restaurant_name)
+            
+            if restaurants:
+                # Get details for the first match
+                place_id = restaurants[0]['place_id']
+                details = agent.get_restaurant_details(place_id)
+                
+                if details:
+                    response_text = agent.format_restaurant_info(details)
+                    
+                    if details.get('phone'):
+                        response_text += f"Their phone number is {details['phone']}. "
+                    
+                    if details.get('website'):
+                        response_text += "They have a website available. "
+                    
+                    response_text += "Would you like me to provide the phone number so you can make a reservation?"
+                    return jsonify({'response': response_text})
+            
+            return jsonify({
+                'response': f"I couldn't find {restaurant_name}. Could you provide more details or check the spelling?"
+            })
+        
+        # Default response if we can't determine the function
         else:
-            response_data['response'] = "I can help you search for restaurants or get details about specific restaurants. What would you like to know?"
-            response_data['success'] = False
+            return jsonify({
+                'response': "I can help you search for restaurants or get details about specific restaurants. What would you like to know?"
+            })
             
     except Exception as e:
         print(f"Error processing request: {e}")
-        response_data['response'] = "I encountered an error while processing your request. Please try again."
-        response_data['success'] = False
-    
-    return jsonify(response_data)
+        print(f"Request data: {request.json}")
+        return jsonify({
+            'response': "I encountered an error while processing your request. Please try again."
+        })
 
 @app.route('/', methods=['GET'])
 def index():
