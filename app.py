@@ -135,14 +135,20 @@ def retell_webhook():
         # Log the incoming request for debugging
         print(f"Incoming webhook data: {json.dumps(data, indent=2)}")
         
-        # RetellAI sends the function name and arguments directly in the request
-        # Based on your logs, it seems the structure might be flat
+        # RetellAI sends function_name and arguments according to their docs
+        function_name = data.get('function_name')
+        arguments = data.get('arguments', {})
         
-        # Check if this is a search_restaurants call
-        if 'location' in data and ('cuisine' in data or 'restaurant' in data):
-            location = data.get('location')
-            cuisine = data.get('cuisine')
+        if function_name == 'search_restaurants':
+            location = arguments.get('location')
+            cuisine = arguments.get('cuisine')
             
+            if not location:
+                return jsonify({
+                    'response': "I need a location to search for restaurants. Could you please tell me which city or area you're interested in?"
+                })
+            
+            print(f"Searching for {cuisine} restaurants in {location}")
             restaurants = agent.search_restaurants(location, cuisine)
             
             if restaurants:
@@ -166,10 +172,14 @@ def retell_webhook():
                     'response': f"I couldn't find any restaurants in {location}. Could you try a different location or be more specific?"
                 })
         
-        # Check if this is a get_restaurant_details call
-        elif 'restaurant_name' in data:
-            restaurant_name = data.get('restaurant_name')
-            location = data.get('location', '')
+        elif function_name == 'get_restaurant_details':
+            restaurant_name = arguments.get('restaurant_name')
+            location = arguments.get('location', '')
+            
+            if not restaurant_name:
+                return jsonify({
+                    'response': "Which restaurant would you like to know more about?"
+                })
             
             # Search for the restaurant
             restaurants = agent.search_restaurants(location, restaurant_name)
@@ -190,12 +200,15 @@ def retell_webhook():
                     
                     response_text += "Would you like me to provide the phone number so you can make a reservation?"
                     return jsonify({'response': response_text})
-            
-            return jsonify({
-                'response': f"I couldn't find {restaurant_name}. Could you provide more details or check the spelling?"
-            })
+                else:
+                    return jsonify({
+                        'response': "I couldn't get the details for that restaurant. Let me try searching again."
+                    })
+            else:
+                return jsonify({
+                    'response': f"I couldn't find {restaurant_name}. Could you provide more details or check the spelling?"
+                })
         
-        # Default response if we can't determine the function
         else:
             return jsonify({
                 'response': "I can help you search for restaurants or get details about specific restaurants. What would you like to know?"
