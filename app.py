@@ -205,6 +205,18 @@ def retell_webhook():
     
     return jsonify(response_data)
 
+@app.route('/', methods=['GET'])
+def index():
+    """Root endpoint"""
+    return jsonify({
+        'service': 'RetellAI Restaurant Agent',
+        'status': 'active',
+        'endpoints': {
+            '/webhook': 'POST - RetellAI webhook endpoint',
+            '/health': 'GET - Health check endpoint'
+        }
+    })
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
