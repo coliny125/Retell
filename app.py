@@ -32,9 +32,18 @@ class RestaurantAgent:
             'key': GOOGLE_PLACES_API_KEY
         }
         
+        print(f"Searching with query: {query}")
+        print(f"API Key present: {bool(GOOGLE_PLACES_API_KEY)}")
+        
         try:
             response = requests.get(search_url, params=params)
+            print(f"Google Places API Status Code: {response.status_code}")
+            
             data = response.json()
+            print(f"Google Places API Response Status: {data.get('status')}")
+            
+            if data.get('error_message'):
+                print(f"Google Places API Error: {data.get('error_message')}")
             
             if data.get('status') == 'OK':
                 restaurants = []
@@ -47,8 +56,10 @@ class RestaurantAgent:
                         'price_level': place.get('price_level'),
                         'open_now': place.get('opening_hours', {}).get('open_now', None)
                     })
+                print(f"Found {len(restaurants)} restaurants")
                 return restaurants
             else:
+                print(f"No results found. Status: {data.get('status')}")
                 return []
         except Exception as e:
             print(f"Error searching restaurants: {e}")
