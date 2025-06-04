@@ -167,12 +167,38 @@ def retell_webhook():
         data = request.json
         print(f"Parsed JSON: {json.dumps(data, indent=2)}")
         
-        # Extract function name and arguments according to RetellAI docs
-        function_name = data.get('function_name')
-        arguments = data.get('arguments', {})
+        # RetellAI might send the function name in different ways
+        # Check multiple possible field names
+        function_name = (
+            data.get('function_name') or 
+            data.get('name') or 
+            data.get('tool_name') or
+            data.get('function') or
+            data.get('tool')
+        )
         
-        print(f"Function: {function_name}")
-        print(f"Arguments: {arguments}")
+        # Arguments might also be in different fields
+        arguments = (
+            data.get('arguments') or 
+            data.get('args') or 
+            data.get('parameters') or 
+            data.get('params') or
+            {}
+        )
+        
+        # If still no function name, check if it's nested
+        if not function_name and 'function' in data:
+            if isinstance(data['function'], dict):
+                function_name = data['function'].get('name')
+                arguments = data['function'].get('arguments', {})
+        
+        print(f"Extracted function: {function_name}")
+        print(f"Extracted arguments: {arguments}")
+        
+        # If we still can't find the function name, log all keys
+        if not function_name:
+            print(f"Could not find function name. Available keys: {list(data.keys())}")
+            print(f"Full data structure: {json.dumps(data, indent=2)}")
         
         if function_name == 'search_restaurants':
             location = arguments.get('location')
