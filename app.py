@@ -95,9 +95,15 @@ class RestaurantAgent:
         
         details_url = f"{self.places_base_url}/details/json"
         
+        # Request MORE fields including reviews, photos, and additional details
         params = {
             'place_id': place_id,
-            'fields': 'name,formatted_phone_number,opening_hours,website,rating,price_level,formatted_address',
+            'fields': (
+                'name,formatted_phone_number,opening_hours,website,rating,'
+                'price_level,formatted_address,business_status,user_ratings_total,'
+                'reviews,photos,editorial_summary,serves_beer,serves_wine,'
+                'delivery,dine_in,takeout,reservable,wheelchair_accessible_entrance'
+            ),
             'key': GOOGLE_PLACES_API_KEY
         }
         
@@ -113,15 +119,42 @@ class RestaurantAgent:
                 hours_text = opening_hours.get('weekday_text', [])
                 is_open = opening_hours.get('open_now', None)
                 
+                # Process reviews
+                reviews = []
+                for review in result.get('reviews', [])[:3]:  # Get top 3 reviews
+                    reviews.append({
+                        'author': review.get('author_name', 'Anonymous'),
+                        'rating': review.get('rating', 0),
+                        'text': review.get('text', ''),
+                        'time': review.get('relative_time_description', '')
+                    })
+                
+                # Get photo references (up to 3)
+                photo_refs = []
+                for photo in result.get('photos', [])[:3]:
+                    photo_refs.append(photo.get('photo_reference'))
+                
                 return {
                     'name': result.get('name'),
                     'phone': result.get('formatted_phone_number'),
                     'address': result.get('formatted_address'),
                     'website': result.get('website'),
                     'rating': result.get('rating'),
+                    'user_ratings_total': result.get('user_ratings_total'),
                     'price_level': result.get('price_level'),
                     'is_open_now': is_open,
-                    'hours': hours_text
+                    'hours': hours_text,
+                    'business_status': result.get('business_status'),
+                    'editorial_summary': result.get('editorial_summary', {}).get('overview'),
+                    'reviews': reviews,
+                    'photos': photo_refs,
+                    'serves_beer': result.get('serves_beer'),
+                    'serves_wine': result.get('serves_wine'),
+                    'delivery': result.get('delivery'),
+                    'dine_in': result.get('dine_in'),
+                    'takeout': result.get('takeout'),
+                    'reservable': result.get('reservable'),
+                    'wheelchair_accessible': result.get('wheelchair_accessible_entrance')
                 }
             else:
                 return {}
@@ -134,7 +167,9 @@ class RestaurantAgent:
         
         info = f"{restaurant['name']} "
         
-        if restaurant.get('rating'):
+        if restaurant.get('rating') and restaurant.get('user_ratings_total'):
+            info += f"has a rating of {restaurant['rating']} stars based on {restaurant['user_ratings_total']} reviews. "
+        elif restaurant.get('rating'):
             info += f"has a rating of {restaurant['rating']} stars. "
         
         if restaurant.get('price_level'):
@@ -145,6 +180,33 @@ class RestaurantAgent:
         if restaurant.get('is_open_now') is not None:
             status = "currently open" if restaurant['is_open_now'] else "currently closed"
             info += f"The restaurant is {status}. "
+        
+        # Add service options
+        services = []
+        if restaurant.get('dine_in'):
+            services.append("dine-in")
+        if restaurant.get('takeout'):
+            services.append("takeout")
+        if restaurant.get('delivery'):
+            services.append("delivery")
+        if services:
+            info += f"They offer {', '.join(services)}. "
+        
+        if restaurant.get('reservable'):
+            info += "Reservations are available. "
+        
+        # Add editorial summary if available
+        if restaurant.get('editorial_summary'):
+            info += f"\n\nHere's what Google says: {restaurant['editorial_summary']} "
+        
+        # Add top reviews
+        if restaurant.get('reviews'):
+            info += "\n\nHere are some recent customer reviews:\n"
+            for i, review in enumerate(restaurant['reviews'], 1):
+                info += f"\n{i}. {review['author']} rated it {review['rating']} stars"
+                if review['time']:
+                    info += f" {review['time']}"
+                info += f" and said: \"{review['text'][:150]}{'...' if len(review['text']) > 150 else ''}\""
         
         return info
 
