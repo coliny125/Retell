@@ -11,12 +11,22 @@ app = Flask(__name__)
 GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY')
 RETELL_API_KEY = os.environ.get('RETELL_API_KEY')
 
+# Add startup check
+if not GOOGLE_PLACES_API_KEY:
+    print("WARNING: GOOGLE_PLACES_API_KEY not set in environment variables!")
+else:
+    print(f"Google Places API Key loaded: {GOOGLE_PLACES_API_KEY[:10]}...")
+
 class RestaurantAgent:
     def __init__(self):
         self.places_base_url = "https://maps.googleapis.com/maps/api/place"
         
     def search_restaurants(self, location: str, cuisine: str = None, radius: int = 5000) -> List[Dict]:
         """Search for restaurants using Google Places API"""
+        
+        if not GOOGLE_PLACES_API_KEY:
+            print("ERROR: Google Places API Key not found!")
+            return []
         
         # Text search endpoint
         search_url = f"{self.places_base_url}/textsearch/json"
@@ -27,42 +37,57 @@ class RestaurantAgent:
             
         params = {
             'query': query,
-            'radius': radius,
             'type': 'restaurant',
             'key': GOOGLE_PLACES_API_KEY
         }
         
-        print(f"Searching with query: {query}")
-        print(f"API Key present: {bool(GOOGLE_PLACES_API_KEY)}")
+        print(f"Searching Google Places API...")
+        print(f"Query: {query}")
         
         try:
             response = requests.get(search_url, params=params)
-            print(f"Google Places API Status Code: {response.status_code}")
+            print(f"API Response Status Code: {response.status_code}")
+            
+            if response.status_code != 200:
+                print(f"API Request Failed: {response.text}")
+                return []
             
             data = response.json()
-            print(f"Google Places API Response Status: {data.get('status')}")
+            status = data.get('status', 'UNKNOWN')
+            print(f"API Response Status: {status}")
             
-            if data.get('error_message'):
-                print(f"Google Places API Error: {data.get('error_message')}")
+            if status == 'REQUEST_DENIED':
+                print(f"API Error Message: {data.get('error_message', 'No error message')}")
+                return []
             
-            if data.get('status') == 'OK':
+            if status == 'OK' and 'results' in data:
                 restaurants = []
-                for place in data.get('results', [])[:5]:  # Limit to top 5
-                    restaurants.append({
-                        'name': place.get('name'),
-                        'place_id': place.get('place_id'),
-                        'address': place.get('formatted_address'),
-                        'rating': place.get('rating'),
-                        'price_level': place.get('price_level'),
+                results = data.get('results', [])
+                print(f"Found {len(results)} results from Google Places")
+                
+                for place in results[:5]:  # Limit to top 5
+                    # Extract data matching Google's actual response format
+                    restaurant_data = {
+                        'name': place.get('name', 'Unknown'),
+                        'place_id': place.get('place_id', ''),
+                        'address': place.get('formatted_address', 'Address not available'),
+                        'rating': place.get('rating', 0),
+                        'price_level': place.get('price_level', None),  # May not be present
                         'open_now': place.get('opening_hours', {}).get('open_now', None)
-                    })
-                print(f"Found {len(restaurants)} restaurants")
+                    }
+                    restaurants.append(restaurant_data)
+                    print(f"Added: {restaurant_data['name']} - Rating: {restaurant_data['rating']}")
+                
                 return restaurants
             else:
-                print(f"No results found. Status: {data.get('status')}")
+                print(f"No results found. Full response: {json.dumps(data, indent=2)}")
                 return []
+                
+        except requests.exceptions.RequestException as e:
+            print(f"Network error calling Google Places API: {e}")
+            return []
         except Exception as e:
-            print(f"Error searching restaurants: {e}")
+            print(f"Unexpected error: {e}")
             return []
     
     def get_restaurant_details(self, place_id: str) -> Dict:
@@ -129,60 +154,82 @@ agent = RestaurantAgent()
 def retell_webhook():
     """Main webhook endpoint for RetellAI"""
     
+    print("\n" + "="*50)
+    print("WEBHOOK CALLED")
+    print("="*50)
+    
     try:
+        # Get and log the raw request data
+        raw_data = request.get_data(as_text=True)
+        print(f"Raw request body: {raw_data}")
+        
+        # Parse JSON
         data = request.json
+        print(f"Parsed JSON: {json.dumps(data, indent=2)}")
         
-        # Log the incoming request for debugging
-        print(f"Incoming webhook data: {json.dumps(data, indent=2)}")
-        
-        # RetellAI sends function_name and arguments according to their docs
+        # Extract function name and arguments according to RetellAI docs
         function_name = data.get('function_name')
         arguments = data.get('arguments', {})
+        
+        print(f"Function: {function_name}")
+        print(f"Arguments: {arguments}")
         
         if function_name == 'search_restaurants':
             location = arguments.get('location')
             cuisine = arguments.get('cuisine')
             
             if not location:
-                return jsonify({
+                response = {
                     'response': "I need a location to search for restaurants. Could you please tell me which city or area you're interested in?"
-                })
+                }
+                print(f"Sending response: {response}")
+                return jsonify(response)
             
-            print(f"Searching for {cuisine} restaurants in {location}")
+            print(f"Calling search_restaurants with location={location}, cuisine={cuisine}")
             restaurants = agent.search_restaurants(location, cuisine)
             
             if restaurants:
-                response_text = f"I found {len(restaurants)} restaurants"
+                response_text = f"I found {len(restaurants)}"
                 if cuisine:
-                    response_text += f" serving {cuisine} cuisine"
-                response_text += f" in {location}. "
+                    response_text += f" {cuisine}"
+                response_text += f" restaurants in {location}:\n\n"
                 
                 for i, rest in enumerate(restaurants, 1):
-                    response_text += f"\n{i}. {rest['name']}"
+                    response_text += f"{i}. {rest['name']}"
                     if rest.get('rating'):
                         response_text += f" - {rest['rating']} stars"
                     if rest.get('open_now') is not None:
-                        status = "open" if rest['open_now'] else "closed"
-                        response_text += f" - currently {status}"
+                        status = "open now" if rest['open_now'] else "closed now"
+                        response_text += f" - {status}"
+                    response_text += "\n"
                 
-                response_text += "\n\nWould you like more details about any of these restaurants?"
-                return jsonify({'response': response_text})
+                response_text += "\nWould you like more details about any of these restaurants?"
+                
+                response = {'response': response_text}
+                print(f"Sending successful response with {len(restaurants)} restaurants")
+                return jsonify(response)
             else:
-                return jsonify({
-                    'response': f"I couldn't find any restaurants in {location}. Could you try a different location or be more specific?"
-                })
+                response = {
+                    'response': f"I couldn't find any {cuisine + ' ' if cuisine else ''}restaurants in {location}. This might be due to an API issue or the location might need to be more specific. Could you try again with a different search?"
+                }
+                print(f"No restaurants found, sending response: {response}")
+                return jsonify(response)
         
         elif function_name == 'get_restaurant_details':
             restaurant_name = arguments.get('restaurant_name')
             location = arguments.get('location', '')
             
             if not restaurant_name:
-                return jsonify({
-                    'response': "Which restaurant would you like to know more about?"
-                })
+                response = {
+                    'response': "Which restaurant would you like to know more about? Please provide the restaurant name."
+                }
+                return jsonify(response)
             
-            # Search for the restaurant
-            restaurants = agent.search_restaurants(location, restaurant_name)
+            print(f"Getting details for restaurant: {restaurant_name} in {location}")
+            
+            # Search for the restaurant to get its place_id
+            search_query = f"{restaurant_name} {location}" if location else restaurant_name
+            restaurants = agent.search_restaurants(search_query)
             
             if restaurants:
                 # Get details for the first match
@@ -199,27 +246,37 @@ def retell_webhook():
                         response_text += "They have a website available. "
                     
                     response_text += "Would you like me to provide the phone number so you can make a reservation?"
-                    return jsonify({'response': response_text})
+                    
+                    response = {'response': response_text}
+                    return jsonify(response)
                 else:
-                    return jsonify({
-                        'response': "I couldn't get the details for that restaurant. Let me try searching again."
-                    })
+                    response = {
+                        'response': "I found the restaurant but couldn't retrieve its detailed information. Would you like me to try again?"
+                    }
+                    return jsonify(response)
             else:
-                return jsonify({
-                    'response': f"I couldn't find {restaurant_name}. Could you provide more details or check the spelling?"
-                })
+                response = {
+                    'response': f"I couldn't find {restaurant_name}. Could you provide more details about its location or check the spelling?"
+                }
+                return jsonify(response)
         
         else:
-            return jsonify({
-                'response': "I can help you search for restaurants or get details about specific restaurants. What would you like to know?"
-            })
+            response = {
+                'response': f"I received an unknown function: {function_name}. I can help you search for restaurants or get details about specific restaurants. What would you like to know?"
+            }
+            print(f"Unknown function, sending response: {response}")
+            return jsonify(response)
             
     except Exception as e:
-        print(f"Error processing request: {e}")
-        print(f"Request data: {request.json}")
-        return jsonify({
+        print(f"ERROR in webhook: {e}")
+        print(f"Error type: {type(e).__name__}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        
+        response = {
             'response': "I encountered an error while processing your request. Please try again."
-        })
+        }
+        return jsonify(response)
 
 @app.route('/', methods=['GET'])
 def index():
