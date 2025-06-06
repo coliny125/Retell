@@ -1,21 +1,34 @@
 import os
 import json
 from flask import Flask, request, jsonify
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 from typing import Dict, List, Any
+import uuid
+import time
 
 app = Flask(__name__)
 
 # Configuration
 GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY')
 RETELL_API_KEY = os.environ.get('RETELL_API_KEY')
+RETELL_PHONE_NUMBER = os.environ.get('RETELL_PHONE_NUMBER', '+14157774444')  # Your RetellAI number
+RESTAURANT_CALLER_AGENT_ID = os.environ.get('RESTAURANT_CALLER_AGENT_ID')  # Your second agent
 
 # Add startup check
 if not GOOGLE_PLACES_API_KEY:
     print("WARNING: GOOGLE_PLACES_API_KEY not set in environment variables!")
 else:
     print(f"Google Places API Key loaded: {GOOGLE_PLACES_API_KEY[:10]}...")
+
+if not RETELL_API_KEY:
+    print("WARNING: RETELL_API_KEY not set in environment variables!")
+
+if not RESTAURANT_CALLER_AGENT_ID:
+    print("WARNING: RESTAURANT_CALLER_AGENT_ID not set - outbound calling won't work!")
+
+# In-memory storage for call tracking (in production, use a database)
+active_reservations = {}
 
 class RestaurantAgent:
     def __init__(self):
@@ -209,8 +222,196 @@ class RestaurantAgent:
                 info += f" and said: \"{review['text'][:150]}{'...' if len(review['text']) > 150 else ''}\""
         
         return info
+    
+    def format_phone_number_e164(self, phone: str) -> str:
+        """Convert phone number to E.164 format for RetellAI"""
+        # Remove all non-digit characters
+        phone_digits = ''.join(filter(str.isdigit, phone))
+        
+        # Assume US number if 10 digits without country code
+        if len(phone_digits) == 10:
+            return f"+1{phone_digits}"
+        elif len(phone_digits) == 11 and phone_digits.startswith('1'):
+            return f"+{phone_digits}"
+        else:
+            # Try to use as-is with + prefix
+            return f"+{phone_digits}"
+    
+    def make_reservation_call(self, restaurant_name: str, date: str, time: str, party_size: int, 
+                            customer_name: str, customer_phone: str, location: str = None, 
+                            special_requests: str = None) -> Dict:
+        """Initiates an outbound call to make a reservation"""
+        
+        if not RETELL_API_KEY or not RESTAURANT_CALLER_AGENT_ID:
+            return {
+                'success': False,
+                'message': "I'm not configured to make outbound calls. Please call the restaurant directly."
+            }
+        
+        # Validate customer information
+        if not customer_name or not customer_phone:
+            return {
+                'success': False,
+                'message': "I need your name and phone number to make the reservation. Could you please provide them?"
+            }
+        
+        # First, find the restaurant and get its phone number
+        search_query = f"{restaurant_name} {location}" if location else restaurant_name
+        restaurants = self.search_restaurants(search_query)
+        
+        if not restaurants:
+            return {
+                'success': False,
+                'message': f"I couldn't find {restaurant_name}. Could you provide more details about its location?"
+            }
+        
+        # Get restaurant details
+        place_id = restaurants[0]['place_id']
+        details = self.get_restaurant_details(place_id)
+        
+        if not details or not details.get('phone'):
+            return {
+                'success': False,
+                'message': f"I found {restaurant_name} but couldn't get their phone number. Would you like to try another restaurant?"
+            }
+        
+        # Format phone number for API
+        phone_e164 = self.format_phone_number_e164(details['phone'])
+        
+        # Create a unique reservation ID
+        reservation_id = str(uuid.uuid4())
+        
+        # Store reservation details
+        active_reservations[reservation_id] = {
+            'restaurant_name': details['name'],
+            'customer_name': customer_name,
+            'customer_phone': customer_phone,
+            'date': date,
+            'time': time,
+            'party_size': party_size,
+            'special_requests': special_requests,
+            'status': 'calling',
+            'created_at': datetime.now().isoformat()
+        }
+        
+        # Make the API call to RetellAI
+        headers = {
+            'Authorization': f'Bearer {RETELL_API_KEY}',
+            'Content-Type': 'application/json'
+        }
+        
+        # Prepare dynamic variables for the restaurant caller agent
+        dynamic_variables = {
+            'restaurant_name': details['name'],
+            'customer_name': customer_name,
+            'customer_phone': customer_phone,
+            'date': date,
+            'time': time,
+            'party_size': str(party_size),
+            'special_requests': special_requests or 'none'
+        }
+        
+        data = {
+            'from_number': RETELL_PHONE_NUMBER,
+            'to_number': phone_e164,
+            'agent_id': RESTAURANT_CALLER_AGENT_ID,
+            'metadata': {
+                'reservation_id': reservation_id,
+                'type': 'restaurant_reservation',
+                'customer_name': customer_name,
+                'customer_phone': customer_phone
+            },
+            'dynamic_variables': dynamic_variables
+        }
+        
+        try:
+            response = requests.post(
+                'https://api.retellai.com/v2/create-phone-call',
+                headers=headers,
+                json=data
+            )
+            
+            if response.status_code in [200, 201]:
+                call_data = response.json()
+                active_reservations[reservation_id]['call_id'] = call_data.get('call_id')
+                
+                return {
+                    'success': True,
+                    'reservation_id': reservation_id,
+                    'message': f"I'm calling {details['name']} now to make a reservation for {customer_name}, "
+                             f"party of {party_size} on {date} at {time}. "
+                             f"I'll let you know as soon as I have confirmation. This usually takes 1-2 minutes."
+                }
+            else:
+                print(f"RetellAI API error: {response.status_code} - {response.text}")
+                return {
+                    'success': False,
+                    'message': "I encountered an error trying to call the restaurant. Would you like me to provide their number so you can call directly?"
+                }
+                
+        except Exception as e:
+            print(f"Error making outbound call: {e}")
+            return {
+                'success': False,
+                'message': "I couldn't complete the call. Would you like the restaurant's phone number instead?"
+            }
+    
+    def check_reservation_status(self, reservation_id: str) -> Dict:
+        """Check the status of a reservation call"""
+        
+        if reservation_id not in active_reservations:
+            return {
+                'found': False,
+                'message': "I couldn't find that reservation. It may have expired or the ID is incorrect."
+            }
+        
+        reservation = active_reservations[reservation_id]
+        status = reservation['status']
+        
+        if status == 'calling':
+            return {
+                'found': True,
+                'status': 'calling',
+                'message': f"I'm still on the call with {reservation['restaurant_name']}. I'll have an update for you shortly."
+            }
+        elif status == 'confirmed':
+            return {
+                'found': True,
+                'status': 'confirmed',
+                'message': f"Great news! Your reservation at {reservation['restaurant_name']} is confirmed for "
+                         f"{reservation['customer_name']}, party of {reservation['party_size']} on {reservation['date']} at {reservation['time']}. "
+                         f"They have your phone number {reservation['customer_phone']} on file. "
+                         f"{reservation.get('confirmation_details', '')}"
+            }
+        elif status == 'failed':
+            return {
+                'found': True,
+                'status': 'failed',
+                'message': f"I couldn't make the reservation at {reservation['restaurant_name']}. "
+                         f"{reservation.get('failure_reason', 'The restaurant may be fully booked or closed.')} "
+                         f"Would you like me to try another restaurant?"
+            }
+        else:
+            return {
+                'found': True,
+                'status': status,
+                'message': f"The reservation status is: {status}"
+            }
 
 agent = RestaurantAgent()
+
+@app.route('/', methods=['GET'])
+def index():
+    """Root endpoint"""
+    return jsonify({
+        'service': 'RetellAI Restaurant Agent',
+        'status': 'active',
+        'endpoints': {
+            '/webhook': 'POST - RetellAI webhook endpoint',
+            '/health': 'GET - Health check endpoint',
+            '/retell-webhook': 'POST - RetellAI call status webhook'
+        }
+    })
 
 @app.route('/webhook', methods=['POST'])
 def retell_webhook():
@@ -261,6 +462,10 @@ def retell_webhook():
         if not function_name:
             print(f"Could not find function name. Available keys: {list(data.keys())}")
             print(f"Full data structure: {json.dumps(data, indent=2)}")
+        
+        # List all supported functions for debugging
+        supported_functions = ['search_restaurants', 'get_restaurant_details', 'make_reservation_call', 'check_reservation_status']
+        print(f"Checking if '{function_name}' is in supported functions: {supported_functions}")
         
         if function_name == 'search_restaurants':
             location = arguments.get('location')
@@ -328,12 +533,13 @@ def retell_webhook():
                     response_text = agent.format_restaurant_info(details)
                     
                     if details.get('phone'):
-                        response_text += f"Their phone number is {details['phone']}. "
+                        response_text += f"\n\nTheir phone number is {details['phone']}. Would you like me to repeat that?"
                     
                     if details.get('website'):
-                        response_text += "They have a website available. "
+                        response_text += f" They also have a website for online reservations. "
                     
-                    response_text += "Would you like me to provide the phone number so you can make a reservation?"
+                    if details.get('hours'):
+                        response_text += "\n\nWould you like to hear their hours of operation?"
                     
                     response = {'response': response_text}
                     return jsonify(response)
@@ -348,11 +554,91 @@ def retell_webhook():
                 }
                 return jsonify(response)
         
+        elif function_name == 'make_reservation_call':
+            restaurant_name = arguments.get('restaurant_name')
+            date = arguments.get('date')
+            time = arguments.get('time')
+            party_size = arguments.get('party_size', 2)
+            customer_name = arguments.get('customer_name')
+            customer_phone = arguments.get('customer_phone')
+            location = arguments.get('location')
+            special_requests = arguments.get('special_requests')
+            
+            if not restaurant_name:
+                response = {
+                    'response': "Which restaurant would you like me to call for a reservation?"
+                }
+                return jsonify(response)
+            
+            if not date or not time:
+                response = {
+                    'response': f"I need to know when you'd like to dine at {restaurant_name}. What date and time would you prefer?"
+                }
+                return jsonify(response)
+            
+            if not customer_name or not customer_phone:
+                response = {
+                    'response': "I'll need your name and phone number to make the reservation. This is so the restaurant can contact you if needed. Could you please provide them?"
+                }
+                return jsonify(response)
+            
+            print(f"Making reservation call for {customer_name} at {restaurant_name} on {date} at {time} for {party_size} people")
+            
+            result = agent.make_reservation_call(
+                restaurant_name, date, time, party_size, 
+                customer_name, customer_phone, location, special_requests
+            )
+            
+            if result['success']:
+                # Store the reservation ID in the response for tracking
+                response = {
+                    'response': result['message'],
+                    'metadata': {
+                        'reservation_id': result['reservation_id']
+                    }
+                }
+            else:
+                response = {'response': result['message']}
+            
+            return jsonify(response)
+        
+        elif function_name == 'check_reservation_status':
+            reservation_id = arguments.get('reservation_id')
+            
+            if not reservation_id:
+                # If no reservation ID provided, check if there's a recent one
+                recent_reservations = sorted(
+                    [(k, v) for k, v in active_reservations.items()],
+                    key=lambda x: x[1]['created_at'],
+                    reverse=True
+                )
+                
+                if recent_reservations:
+                    reservation_id = recent_reservations[0][0]
+                    print(f"Using most recent reservation: {reservation_id}")
+                else:
+                    response = {
+                        'response': "I don't have any active reservation calls. Would you like me to make a new reservation?"
+                    }
+                    return jsonify(response)
+            
+            status = agent.check_reservation_status(reservation_id)
+            response = {'response': status['message']}
+            return jsonify(response)
+        
         else:
+            # List all available functions for clarity
+            available_functions = [
+                'search_restaurants', 
+                'get_restaurant_details', 
+                'make_reservation_call', 
+                'check_reservation_status'
+            ]
+            
             response = {
-                'response': f"I received an unknown function: {function_name}. I can help you search for restaurants or get details about specific restaurants. What would you like to know?"
+                'response': f"I received an unknown function: {function_name}. I can help you with these functions: {', '.join(available_functions)}. What would you like to do?"
             }
-            print(f"Unknown function, sending response: {response}")
+            print(f"Unknown function '{function_name}'. Available: {available_functions}")
             return jsonify(response)
             
     except Exception as e:
@@ -366,17 +652,71 @@ def retell_webhook():
         }
         return jsonify(response)
 
-@app.route('/', methods=['GET'])
-def index():
-    """Root endpoint"""
-    return jsonify({
-        'service': 'RetellAI Restaurant Agent',
-        'status': 'active',
-        'endpoints': {
-            '/webhook': 'POST - RetellAI webhook endpoint',
-            '/health': 'GET - Health check endpoint'
-        }
-    })
+@app.route('/retell-webhook', methods=['POST'])
+def retell_call_webhook():
+    """Webhook to receive call status updates from RetellAI"""
+    
+    try:
+        data = request.json
+        event_type = data.get('event')
+        
+        print(f"Received RetellAI webhook event: {event_type}")
+        print(f"Data: {json.dumps(data, indent=2)}")
+        
+        if event_type == 'call_ended':
+            call_data = data.get('call', {})
+            metadata = call_data.get('metadata', {})
+            
+            # Check if this was a reservation call
+            if metadata.get('type') == 'restaurant_reservation':
+                reservation_id = metadata.get('reservation_id')
+                
+                if reservation_id and reservation_id in active_reservations:
+                    # Analyze the call transcript to determine success
+                    transcript = call_data.get('transcript', '')
+                    
+                    # Simple keyword analysis (in production, use better NLP)
+                    confirmed_keywords = ['confirmed', 'booked', 'see you', 'all set', 'reservation for']
+                    failed_keywords = ['fully booked', 'no availability', 'closed', 'cannot', "can't"]
+                    
+                    transcript_lower = transcript.lower()
+                    
+                    # Check if customer name was mentioned in confirmation
+                    customer_name = active_reservations[reservation_id].get('customer_name', '')
+                    
+                    if any(keyword in transcript_lower for keyword in confirmed_keywords):
+                        active_reservations[reservation_id]['status'] = 'confirmed'
+                        confirmation_msg = f"The restaurant confirmed your reservation."
+                        
+                        # Check if they mentioned the customer name
+                        if customer_name.lower() in transcript_lower:
+                            confirmation_msg += f" They have the reservation under {customer_name}."
+                        
+                        confirmation_msg += f" Call duration: {call_data.get('duration_seconds', 0)} seconds."
+                        active_reservations[reservation_id]['confirmation_details'] = confirmation_msg
+                    elif any(keyword in transcript_lower for keyword in failed_keywords):
+                        active_reservations[reservation_id]['status'] = 'failed'
+                        active_reservations[reservation_id]['failure_reason'] = (
+                            "The restaurant couldn't accommodate your reservation request."
+                        )
+                    else:
+                        # Unclear outcome
+                        active_reservations[reservation_id]['status'] = 'unclear'
+                        active_reservations[reservation_id]['notes'] = (
+                            "The call ended but I couldn't determine if the reservation was confirmed. "
+                            "You may want to call the restaurant directly."
+                        )
+                    
+                    # Store the transcript for reference
+                    active_reservations[reservation_id]['transcript'] = transcript
+                    
+                    print(f"Updated reservation {reservation_id} status to: {active_reservations[reservation_id]['status']}")
+        
+        return jsonify({'status': 'ok'})
+        
+    except Exception as e:
+        print(f"Error in retell webhook: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/health', methods=['GET'])
 def health_check():
