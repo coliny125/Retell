@@ -239,7 +239,7 @@ class RestaurantAgent:
     
     def make_reservation_call(self, restaurant_name: str, date: str, time: str, party_size: int, 
                             customer_name: str, customer_phone: str, location: str = None, 
-                            special_requests: str = None) -> Dict:
+                            special_requests: str = None, caller_call_id: str = None) -> Dict:
         """Initiates an outbound call to make a reservation"""
         
         print(f"make_reservation_call called with: restaurant={restaurant_name}, date={date}, time={time}")
@@ -298,7 +298,7 @@ class RestaurantAgent:
         # Create a unique reservation ID
         reservation_id = str(uuid.uuid4())
         
-        # Store reservation details
+        # Store reservation details with caller's call ID for real-time updates
         active_reservations[reservation_id] = {
             'restaurant_name': details['name'],
             'customer_name': customer_name,
@@ -308,7 +308,8 @@ class RestaurantAgent:
             'party_size': party_size,
             'special_requests': special_requests,
             'status': 'calling',
-            'created_at': datetime.now().isoformat()
+            'created_at': datetime.now().isoformat(),
+            'caller_call_id': caller_call_id  # Track which caller to update
         }
         
         # Make the API call to RetellAI
@@ -337,7 +338,8 @@ class RestaurantAgent:
                 'reservation_id': reservation_id,
                 'type': 'restaurant_reservation',
                 'customer_name': customer_name,
-                'customer_phone': customer_phone
+                'customer_phone': customer_phone,
+                'caller_call_id': caller_call_id
             },
             'dynamic_variables': dynamic_variables
         }
@@ -361,12 +363,23 @@ class RestaurantAgent:
                 call_data = response.json()
                 active_reservations[reservation_id]['call_id'] = call_data.get('call_id')
                 
+                # Start a background check for updates (in production, use proper async)
+                def check_and_notify():
+                    time.sleep(60)  # Wait 60 seconds
+                    status = self.check_reservation_status(reservation_id)
+                    # Here you would trigger an update to the caller
+                    print(f"Reservation {reservation_id} status: {status}")
+                
+                # In production, use proper async handling
+                # threading.Thread(target=check_and_notify).start()
+                
                 return {
                     'success': True,
                     'reservation_id': reservation_id,
                     'message': f"I'm calling {details['name']} now to make a reservation for {customer_name}, "
                              f"party of {party_size} on {date} at {time}. "
-                             f"I'll let you know as soon as I have confirmation. This usually takes 1-2 minutes."
+                             f"I'll update you as soon as the call completes. In the meantime, "
+                             f"feel free to ask me anything else or say 'check my reservation' for an update."
                 }
             else:
                 print(f"RetellAI API error: {response.status_code} - {response.text}")
@@ -753,6 +766,56 @@ def retell_call_webhook():
     except Exception as e:
         print(f"Error in retell webhook: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/test-outbound-call', methods=['GET'])
+def test_outbound_call():
+    """Test endpoint to verify RetellAI outbound calling setup"""
+    
+    if not RETELL_API_KEY:
+        return jsonify({'error': 'RETELL_API_KEY not set'}), 500
+    
+    if not RESTAURANT_CALLER_AGENT_ID:
+        return jsonify({'error': 'RESTAURANT_CALLER_AGENT_ID not set'}), 500
+    
+    # Test API call to RetellAI
+    headers = {
+        'Authorization': f'Bearer {RETELL_API_KEY}',
+        'Content-Type': 'application/json'
+    }
+    
+    # Try to validate the agent exists
+    test_data = {
+        'from_number': RETELL_PHONE_NUMBER or '+14157774444',
+        'to_number': '+14157774445',  # Test number
+        'agent_id': RESTAURANT_CALLER_AGENT_ID,
+        'metadata': {'test': True}
+    }
+    
+    try:
+        # Try different API endpoints
+        endpoints = [
+            'https://api.retellai.com/create-phone-call',
+            'https://api.retellai.com/v1/create-phone-call',
+            'https://api.retellai.com/v2/create-phone-call'
+        ]
+        
+        results = {}
+        for endpoint in endpoints:
+            response = requests.post(endpoint, headers=headers, json=test_data)
+            results[endpoint] = {
+                'status_code': response.status_code,
+                'response': response.text[:200]  # First 200 chars
+            }
+        
+        return jsonify({
+            'api_key_preview': f"{RETELL_API_KEY[:10]}...",
+            'agent_id': RESTAURANT_CALLER_AGENT_ID,
+            'phone_number': RETELL_PHONE_NUMBER,
+            'test_results': results
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/debug-env', methods=['GET'])
 def debug_env():
