@@ -750,6 +750,90 @@ def retell_webhook():
                     'response': f"I couldn't find {restaurant_name}. Could you provide more details about its location or check the spelling?"
                 }
                 return jsonify(response)
+            
+            if not restaurant_name:
+                response = {
+                    'response': "Which restaurant would you like to know more about? Please provide the restaurant name."
+                }
+                return jsonify(response)
+            
+            print(f"Getting details for restaurant: {restaurant_name} in {location}")
+            
+            # Search for the restaurant to get its place_id
+            search_query = f"{restaurant_name} {location}" if location else restaurant_name
+            restaurants = agent.search_restaurants(search_query)
+            
+            if restaurants:
+                # Get details for the first match
+                place_id = restaurants[0]['place_id']
+                details = agent.get_restaurant_details(place_id)
+                
+                if details:
+                    response_text = agent.format_restaurant_info(details)
+                    
+                    if details.get('phone'):
+                        response_text += f"\n\nTheir phone number is {details['phone']}. Would you like me to repeat that?"
+                    
+                    if details.get('website'):
+                        response_text += f" They also have a website for online reservations. "
+                    
+                    if details.get('hours'):
+                        response_text += "\n\nWould you like to hear their hours of operation?"
+                    
+                    response = {'response': response_text}
+                    return jsonify(response)
+                else:
+                    response = {
+                        'response': "I found the restaurant but couldn't retrieve its detailed information. Would you like me to try again?"
+                    }
+                    return jsonify(response)
+            else:
+                response = {
+                    'response': f"I couldn't find {restaurant_name}. Could you provide more details about its location or check the spelling?"
+                }
+                return jsonify(response)
+            
+            if not restaurant_name:
+                response = {
+                    'response': "Which restaurant would you like to know more about? Please provide the restaurant name."
+                }
+                return jsonify(response)
+            
+            print(f"Getting details for restaurant: {restaurant_name} in {location}")
+            
+            # Search for the restaurant to get its place_id
+            search_query = f"{restaurant_name} {location}" if location else restaurant_name
+            restaurants = agent.search_restaurants(search_query)
+            
+            if restaurants:
+                # Get details for the first match
+                place_id = restaurants[0]['place_id']
+                details = agent.get_restaurant_details(place_id)
+                
+                if details:
+                    response_text = agent.format_restaurant_info(details)
+                    
+                    if details.get('phone'):
+                        response_text += f"\n\nTheir phone number is {details['phone']}. Would you like me to repeat that?"
+                    
+                    if details.get('website'):
+                        response_text += f" They also have a website for online reservations. "
+                    
+                    if details.get('hours'):
+                        response_text += "\n\nWould you like to hear their hours of operation?"
+                    
+                    response = {'response': response_text}
+                    return jsonify(response)
+                else:
+                    response = {
+                        'response': "I found the restaurant but couldn't retrieve its detailed information. Would you like me to try again?"
+                    }
+                    return jsonify(response)
+            else:
+                response = {
+                    'response': f"I couldn't find {restaurant_name}. Could you provide more details about its location or check the spelling?"
+                }
+                return jsonify(response)
         
         elif function_name == 'make_reservation_call':
             restaurant_name = arguments.get('restaurant_name')
