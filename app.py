@@ -291,9 +291,9 @@ class RestaurantAgent:
             print("TEST MODE: Using test restaurant details")
             details = {
                 'name': 'Test Restaurant',
-                'phone': '(626) 698-9990'  # Test phone number
+                'phone': '(626) 698-9990'  # Use a real test number you control
             }
-            phone_e164 = '+16266989990'
+            phone_e164 = '+16266989990'  # This is what will be DIALED
         else:
             restaurants = self.search_restaurants(search_query)
             
@@ -369,7 +369,7 @@ class RestaurantAgent:
                 'customer_phone': customer_phone,
                 'caller_call_id': caller_call_id
             },
-            'dynamic_variables': dynamic_variables
+            'retell_llm_dynamic_variables': dynamic_variables  # Changed from 'dynamic_variables'
         }
         
         print(f"Making RetellAI API call:")
@@ -812,7 +812,7 @@ def test_dynamic_variables():
         'from_number': RETELL_PHONE_NUMBER or '+14157774444',
         'to_number': '+15551234567',  # Safe test number
         'agent_id': RESTAURANT_CALLER_AGENT_ID,
-        'dynamic_variables': {
+        'retell_llm_dynamic_variables': {  # Changed from 'dynamic_variables'
             'restaurant_name': 'Test Restaurant',
             'customer_name': 'Test Customer',
             'customer_phone': '555-111-2222',
@@ -834,7 +834,7 @@ def test_dynamic_variables():
         return jsonify({
             'status_code': response.status_code,
             'response': response.json() if response.status_code in [200, 201] else response.text,
-            'dynamic_variables_sent': test_data['dynamic_variables']
+            'retell_llm_dynamic_variables_sent': test_data['retell_llm_dynamic_variables']
         })
         
     except Exception as e:
