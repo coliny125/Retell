@@ -92,7 +92,38 @@ class RestaurantAgent:
                     print(f"Added: {restaurant_data['name']} - Rating: {restaurant_data['rating']}")
                 
                 return restaurants
+            elif function_name == 'transfer_to_restaurant':
+            restaurant_name = arguments.get('restaurant_name')
+            date = arguments.get('date')
+            time = arguments.get('time')
+            party_size = arguments.get('party_size', 2)
+            customer_name = arguments.get('customer_name')
+            customer_phone = arguments.get('customer_phone')
+            location = arguments.get('location')
+            
+            if not all([restaurant_name, date, time, customer_name, customer_phone]):
+                response = {
+                    'response': "I need all your details (name, phone, date, time) to transfer you to the restaurant."
+                }
+                return jsonify(response)
+            
+            result = agent.prepare_transfer_to_restaurant(
+                restaurant_name, date, time, party_size,
+                customer_name, customer_phone, location
+            )
+            
+            if result['success']:
+                # RetellAI will handle the transfer when it sees transfer_phone_number
+                response = {
+                    'response': result['message'],
+                    'transfer_phone_number': result['transfer_phone_number']
+                }
             else:
+                response = {'response': result['message']}
+            
+            return jsonify(response)
+        
+        else:
                 print(f"No results found. Full response: {json.dumps(data, indent=2)}")
                 return []
                 
@@ -404,6 +435,7 @@ class RestaurantAgent:
                 return {
                     'success': True,
                     'reservation_id': reservation_id,
+                    'call_id': call_data.get('call_id'),  # Return the call ID
                     'message': f"I'm calling {details['name']} now to make a reservation for {customer_name}, "
                              f"party of {party_size} on {date} at {time}. "
                              f"I'll update you as soon as the call completes. In the meantime, "
@@ -433,8 +465,12 @@ class RestaurantAgent:
                 'message': "I couldn't complete the call. Would you like the restaurant's phone number instead?"
             }
     
-    def check_reservation_status(self, reservation_id: str) -> Dict:
+    def check_reservation_status(self, reservation_id: str, force_refresh: bool = True) -> Dict:
         """Check the status of a reservation call"""
+        
+        print(f"Checking reservation status for ID: {reservation_id}")
+        print(f"Active reservations: {list(active_reservations.keys())}")
+        print(f"Reservation details: {active_reservations.get(reservation_id, 'NOT FOUND')}")
         
         if reservation_id not in active_reservations:
             return {
@@ -445,6 +481,50 @@ class RestaurantAgent:
         reservation = active_reservations[reservation_id]
         status = reservation['status']
         
+        # ALWAYS check if we have a call_id and force_refresh is True
+        if 'call_id' in reservation and force_refresh:
+            print(f"Force checking call status for {reservation['call_id']}")
+            
+            # Try to get call status from RetellAI API
+            headers = {
+                'Authorization': f'Bearer {RETELL_API_KEY}',
+                'Content-Type': 'application/json'
+            }
+            
+            try:
+                response = requests.get(
+                    f'https://api.retellai.com/v2/get-call/{reservation["call_id"]}',
+                    headers=headers
+                )
+                
+                if response.ok:
+                    call_data = response.json()
+                    print(f"Got call data: {call_data.get('call_status')}")
+                    
+                    # If call ended, analyze transcript
+                    if call_data.get('call_status') in ['ended', 'analyzed']:
+                        transcript = call_data.get('transcript', '')
+                        print(f"Call ended, analyzing transcript: {transcript[:200]}...")
+                        
+                        # Analyze transcript
+                        transcript_lower = transcript.lower()
+                        if any(word in transcript_lower for word in ['confirmed', 'booked', 'see you', 'all set', 'reservation for']):
+                            reservation['status'] = 'confirmed'
+                            reservation['confirmation_details'] = "The restaurant confirmed your reservation."
+                        elif any(word in transcript_lower for word in ['fully booked', 'no availability', 'closed', 'cannot']):
+                            reservation['status'] = 'failed'
+                            reservation['failure_reason'] = "The restaurant couldn't accommodate your reservation."
+                        else:
+                            reservation['status'] = 'unclear'
+                            reservation['notes'] = "The call ended but the outcome is unclear."
+                        
+                        reservation['transcript'] = transcript
+                        reservation['manual_check'] = True
+                        status = reservation['status']  # Update status variable
+            except Exception as e:
+                print(f"Error manually checking call status: {e}")
+        
+        # Return status message based on current state
         if status == 'calling':
             return {
                 'found': True,
@@ -475,7 +555,47 @@ class RestaurantAgent:
                 'message': f"The reservation status is: {status}"
             }
 
-agent = RestaurantAgent()
+    def prepare_transfer_to_restaurant(self, restaurant_name: str, date: str, time: str, 
+                                      party_size: int, customer_name: str, customer_phone: str,
+                                      location: str = None) -> Dict:
+        """Prepare to transfer the call to restaurant with context"""
+        
+        # Find restaurant and get phone
+        search_query = f"{restaurant_name} {location}" if location else restaurant_name
+        restaurants = self.search_restaurants(search_query)
+        
+        if not restaurants:
+            return {
+                'success': False,
+                'message': f"I couldn't find {restaurant_name}. Could you provide more details?"
+            }
+        
+        # Get details
+        place_id = restaurants[0]['place_id']
+        details = self.get_restaurant_details(place_id)
+        
+        if not details or not details.get('phone'):
+            return {
+                'success': False,
+                'message': f"I found {restaurant_name} but couldn't get their phone number."
+            }
+        
+        # Format phone for transfer
+        phone_e164 = self.format_phone_number_e164(details['phone'])
+        
+        # Prepare transfer message
+        transfer_message = (
+            f"I'm going to transfer you to {details['name']} now. "
+            f"When they answer, you can make your reservation for {party_size} people "
+            f"on {date} at {time}. Your name is {customer_name} and your phone is {customer_phone}. "
+            f"I'll stay on the line to help if needed."
+        )
+        
+        return {
+            'success': True,
+            'transfer_phone_number': phone_e164,
+            'message': transfer_message
+        }
 
 @app.route('/', methods=['GET'])
 def index():
@@ -541,7 +661,7 @@ def retell_webhook():
             print(f"Full data structure: {json.dumps(data, indent=2)}")
         
         # List all supported functions for debugging
-        supported_functions = ['search_restaurants', 'get_restaurant_details', 'make_reservation_call', 'check_reservation_status']
+        supported_functions = ['search_restaurants', 'get_restaurant_details', 'make_reservation_call', 'check_reservation_status', 'transfer_to_restaurant']
         print(f"Checking if '{function_name}' is in supported functions: {supported_functions}")
         
         if function_name == 'search_restaurants':
@@ -641,6 +761,9 @@ def retell_webhook():
             location = arguments.get('location')
             special_requests = arguments.get('special_requests')
             
+            # Get the current call ID from the request data
+            caller_call_id = data.get('call_id') or data.get('call', {}).get('call_id')
+            
             if not restaurant_name:
                 response = {
                     'response': "Which restaurant would you like me to call for a reservation?"
@@ -663,15 +786,17 @@ def retell_webhook():
             
             result = agent.make_reservation_call(
                 restaurant_name, date, time, party_size, 
-                customer_name, customer_phone, location, special_requests
+                customer_name, customer_phone, location, special_requests,
+                caller_call_id=caller_call_id  # Pass the current call ID
             )
             
             if result['success']:
-                # Store the reservation ID in the response for tracking
+                # Store the reservation ID and call ID for tracking
                 response = {
-                    'response': result['message'],
+                    'response': result['message'] + "\n\nI'll check back with you in about a minute to let you know if they confirmed your reservation.",
                     'metadata': {
-                        'reservation_id': result['reservation_id']
+                        'reservation_id': result['reservation_id'],
+                        'call_id': result.get('call_id')  # Store call ID for manual checking
                     }
                 }
             else:
@@ -709,7 +834,8 @@ def retell_webhook():
                 'search_restaurants', 
                 'get_restaurant_details', 
                 'make_reservation_call', 
-                'check_reservation_status'
+                'check_reservation_status',
+                'transfer_to_restaurant'
             ]
             
             response = {
@@ -728,6 +854,136 @@ def retell_webhook():
             'response': "I encountered an error while processing your request. Please try again."
         }
         return jsonify(response)
+
+@app.route('/force-check-all', methods=['GET'])
+def force_check_all():
+    """Force check all calling reservations"""
+    updated = []
+    
+    for res_id, reservation in active_reservations.items():
+        if reservation['status'] == 'calling' and 'call_id' in reservation:
+            # Force check this reservation
+            result = agent.check_reservation_status(res_id, force_refresh=True)
+            updated.append({
+                'reservation_id': res_id,
+                'old_status': 'calling',
+                'new_status': active_reservations[res_id]['status'],
+                'restaurant': reservation['restaurant_name']
+            })
+    
+    return jsonify({
+        'checked': len(updated),
+        'updated_reservations': updated
+    })
+
+@app.route('/test-last-call', methods=['GET'])
+def test_last_call():
+    """Check the status of the most recent call"""
+    
+    # Get the most recent reservation
+    if not active_reservations:
+        return jsonify({'error': 'No active reservations'})
+    
+    recent_reservation = sorted(
+        active_reservations.items(),
+        key=lambda x: x[1]['created_at'],
+        reverse=True
+    )[0]
+    
+    reservation_id, reservation = recent_reservation
+    call_id = reservation.get('call_id')
+    
+    if not call_id:
+        return jsonify({'error': 'No call_id found for recent reservation'})
+    
+    # Check call status via API
+    headers = {
+        'Authorization': f'Bearer {RETELL_API_KEY}',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        response = requests.get(
+            f'https://api.retellai.com/v2/get-call/{call_id}',
+            headers=headers
+        )
+        
+        if response.ok:
+            call_data = response.json()
+            return jsonify({
+                'reservation_id': reservation_id,
+                'call_id': call_id,
+                'call_status': call_data.get('call_status'),
+                'duration': call_data.get('duration_seconds'),
+                'end_timestamp': call_data.get('end_timestamp'),
+                'transcript_length': len(call_data.get('transcript', '')),
+                'transcript_preview': call_data.get('transcript', '')[:200] + '...' if call_data.get('transcript') else 'No transcript',
+                'stored_status': reservation['status'],
+                'webhook_received': reservation.get('webhook_received', False)
+            })
+        else:
+            return jsonify({'error': 'Failed to get call', 'details': response.text})
+            
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+@app.route('/check-call/<call_id>', methods=['GET'])
+def check_call_status(call_id):
+    """Manually check a call's status using RetellAI API"""
+    headers = {
+        'Authorization': f'Bearer {RETELL_API_KEY}',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        response = requests.get(
+            f'https://api.retellai.com/v2/get-call/{call_id}',
+            headers=headers
+        )
+        
+        if response.ok:
+            call_data = response.json()
+            
+            # Update reservation if this was a reservation call
+            metadata = call_data.get('metadata', {})
+            if metadata.get('type') == 'restaurant_reservation':
+                reservation_id = metadata.get('reservation_id')
+                if reservation_id and reservation_id in active_reservations:
+                    # Manually trigger the same logic as webhook
+                    transcript = call_data.get('transcript', '')
+                    
+                    # Analyze transcript
+                    if 'confirmed' in transcript.lower():
+                        active_reservations[reservation_id]['status'] = 'confirmed'
+                    elif 'fully booked' in transcript.lower():
+                        active_reservations[reservation_id]['status'] = 'failed'
+                    
+                    active_reservations[reservation_id]['transcript'] = transcript
+            
+            return jsonify({
+                'call_id': call_id,
+                'status': call_data.get('call_status'),
+                'duration': call_data.get('duration_seconds'),
+                'transcript_preview': call_data.get('transcript', '')[:200] + '...',
+                'metadata': metadata
+            })
+        else:
+            return jsonify({'error': 'Failed to get call status', 'details': response.text}), response.status_code
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/webhook-test', methods=['POST', 'GET'])
+def webhook_test():
+    """Test endpoint to log any webhook calls"""
+    print("\n" + "="*50)
+    print("WEBHOOK TEST ENDPOINT HIT")
+    print(f"Method: {request.method}")
+    print(f"Headers: {dict(request.headers)}")
+    if request.method == 'POST':
+        print(f"Body: {request.get_data(as_text=True)}")
+    print("="*50 + "\n")
+    return jsonify({'status': 'received'}), 200
 
 @app.route('/retell-webhook', methods=['POST'])
 def retell_call_webhook():
@@ -788,12 +1044,75 @@ def retell_call_webhook():
                     active_reservations[reservation_id]['transcript'] = transcript
                     
                     print(f"Updated reservation {reservation_id} status to: {active_reservations[reservation_id]['status']}")
+                    
+                    # IMPORTANT: Send update to the original caller
+                    # Get the caller's call ID from the reservation
+                    caller_call_id = active_reservations[reservation_id].get('caller_call_id')
+                    
+                    if caller_call_id and RETELL_API_KEY:
+                        # Use RetellAI API to send a message to the active call
+                        try:
+                            update_headers = {
+                                'Authorization': f'Bearer {RETELL_API_KEY}',
+                                'Content-Type': 'application/json'
+                            }
+                            
+                            # Prepare a message based on status
+                            if active_reservations[reservation_id]['status'] == 'confirmed':
+                                update_message = (
+                                    f"Great news! I just finished speaking with {active_reservations[reservation_id]['restaurant_name']}. "
+                                    f"Your reservation is confirmed for {active_reservations[reservation_id]['party_size']} people "
+                                    f"on {active_reservations[reservation_id]['date']} at {active_reservations[reservation_id]['time']}."
+                                )
+                            else:
+                                update_message = (
+                                    f"I just finished speaking with {active_reservations[reservation_id]['restaurant_name']}. "
+                                    f"Unfortunately, they couldn't accommodate your reservation request. "
+                                    f"Would you like me to try another restaurant?"
+                                )
+                            
+                            # Send update to the caller
+                            # Note: This endpoint might not exist - check RetellAI docs
+                            update_data = {
+                                'call_id': caller_call_id,
+                                'message': update_message
+                            }
+                            
+                            # This is a hypothetical endpoint - RetellAI might not support this
+                            # update_response = requests.post(
+                            #     f'https://api.retellai.com/v2/update-call',
+                            #     headers=update_headers,
+                            #     json=update_data
+                            # )
+                            
+                            print(f"Would send update to caller: {update_message}")
+                            
+                        except Exception as e:
+                            print(f"Error sending update to caller: {e}")
         
         return jsonify({'status': 'ok'})
         
     except Exception as e:
         print(f"Error in retell webhook: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/debug-reservations', methods=['GET'])
+def debug_reservations():
+    """Debug endpoint to check active reservations"""
+    return jsonify({
+        'active_reservations_count': len(active_reservations),
+        'reservation_ids': list(active_reservations.keys()),
+        'reservations': {
+            k: {
+                'status': v.get('status'),
+                'restaurant': v.get('restaurant_name'),
+                'customer': v.get('customer_name'),
+                'date_time': f"{v.get('date')} at {v.get('time')}",
+                'created_at': v.get('created_at')
+            }
+            for k, v in active_reservations.items()
+        }
+    })
 
 @app.route('/test-dynamic-variables', methods=['GET'])
 def test_dynamic_variables():
