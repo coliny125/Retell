@@ -345,13 +345,13 @@ class RestaurantAgent:
         }
         
         print(f"Making RetellAI API call:")
-        print(f"URL: https://api.retellai.com/v1/create-phone-call")
+        print(f"URL: https://api.retellai.com/v2/create-phone-call")
         print(f"Headers: {headers}")
         print(f"Data: {json.dumps(data, indent=2)}")
         
         try:
             response = requests.post(
-                'https://api.retellai.com/v1/create-phone-call',  # Changed from v2 to v1
+                'https://api.retellai.com/v2/create-phone-call',  # v2 is the correct endpoint
                 headers=headers,
                 json=data
             )
