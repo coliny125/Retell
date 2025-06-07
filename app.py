@@ -137,6 +137,10 @@ class RestaurantAgent:
     def get_restaurant_details(self, place_id: str) -> Dict:
         """Get detailed information about a specific restaurant"""
         
+        if not place_id:
+            print("ERROR: No place_id provided")
+            return {}
+            
         details_url = f"{self.places_base_url}/details/json"
         
         # Request MORE fields including reviews, photos, and additional details
@@ -151,35 +155,52 @@ class RestaurantAgent:
             'key': GOOGLE_PLACES_API_KEY
         }
         
+        print(f"Getting details for place_id: {place_id}")
+        
         try:
-            response = requests.get(details_url, params=params)
+            # Add timeout to prevent hanging
+            response = requests.get(details_url, params=params, timeout=10)
+            print(f"Google Places Details API Status: {response.status_code}")
+            
+            if response.status_code != 200:
+                print(f"API Error: {response.text}")
+                return {}
+                
             data = response.json()
             
             if data.get('status') == 'OK':
                 result = data.get('result', {})
                 
-                # Process opening hours
+                # Safely process opening hours
                 opening_hours = result.get('opening_hours', {})
                 hours_text = opening_hours.get('weekday_text', [])
                 is_open = opening_hours.get('open_now', None)
                 
-                # Process reviews
+                # Safely process reviews
                 reviews = []
-                for review in result.get('reviews', [])[:3]:  # Get top 3 reviews
-                    reviews.append({
-                        'author': review.get('author_name', 'Anonymous'),
-                        'rating': review.get('rating', 0),
-                        'text': review.get('text', ''),
-                        'time': review.get('relative_time_description', '')
-                    })
+                try:
+                    for review in result.get('reviews', [])[:3]:  # Get top 3 reviews
+                        reviews.append({
+                            'author': review.get('author_name', 'Anonymous'),
+                            'rating': review.get('rating', 0),
+                            'text': review.get('text', ''),
+                            'time': review.get('relative_time_description', '')
+                        })
+                except Exception as e:
+                    print(f"Error processing reviews: {e}")
                 
-                # Get photo references (up to 3)
+                # Safely get photo references
                 photo_refs = []
-                for photo in result.get('photos', [])[:3]:
-                    photo_refs.append(photo.get('photo_reference'))
+                try:
+                    for photo in result.get('photos', [])[:3]:
+                        if photo.get('photo_reference'):
+                            photo_refs.append(photo.get('photo_reference'))
+                except Exception as e:
+                    print(f"Error processing photos: {e}")
                 
-                return {
-                    'name': result.get('name'),
+                # Build response with safe defaults
+                details_dict = {
+                    'name': result.get('name', 'Unknown'),
                     'phone': result.get('formatted_phone_number'),
                     'address': result.get('formatted_address'),
                     'website': result.get('website'),
@@ -189,7 +210,7 @@ class RestaurantAgent:
                     'is_open_now': is_open,
                     'hours': hours_text,
                     'business_status': result.get('business_status'),
-                    'editorial_summary': result.get('editorial_summary', {}).get('overview'),
+                    'editorial_summary': result.get('editorial_summary', {}).get('overview') if isinstance(result.get('editorial_summary'), dict) else None,
                     'reviews': reviews,
                     'photos': photo_refs,
                     'serves_beer': result.get('serves_beer'),
@@ -200,59 +221,90 @@ class RestaurantAgent:
                     'reservable': result.get('reservable'),
                     'wheelchair_accessible': result.get('wheelchair_accessible_entrance')
                 }
+                
+                print(f"Successfully got details for: {details_dict['name']}")
+                return details_dict
             else:
+                print(f"Google Places API returned status: {data.get('status')}")
+                print(f"Error message: {data.get('error_message', 'No error message')}")
                 return {}
+        except requests.exceptions.Timeout:
+            print("ERROR: Google Places API request timed out")
+            return {}
+        except requests.exceptions.RequestException as e:
+            print(f"ERROR: Network error getting restaurant details: {e}")
+            return {}
         except Exception as e:
-            print(f"Error getting restaurant details: {e}")
+            print(f"ERROR: Unexpected error getting restaurant details: {e}")
+            import traceback
+            print(traceback.format_exc())
             return {}
     
     def format_restaurant_info(self, restaurant: Dict) -> str:
         """Format restaurant information for speech output"""
         
-        info = f"{restaurant['name']} "
-        
-        if restaurant.get('rating') and restaurant.get('user_ratings_total'):
-            info += f"has a rating of {restaurant['rating']} stars based on {restaurant['user_ratings_total']} reviews. "
-        elif restaurant.get('rating'):
-            info += f"has a rating of {restaurant['rating']} stars. "
-        
-        if restaurant.get('price_level'):
-            price_desc = ['inexpensive', 'moderate', 'expensive', 'very expensive']
-            price_idx = min(restaurant['price_level'] - 1, 3)
-            info += f"It's {price_desc[price_idx]}. "
-        
-        if restaurant.get('is_open_now') is not None:
-            status = "currently open" if restaurant['is_open_now'] else "currently closed"
-            info += f"The restaurant is {status}. "
-        
-        # Add service options
-        services = []
-        if restaurant.get('dine_in'):
-            services.append("dine-in")
-        if restaurant.get('takeout'):
-            services.append("takeout")
-        if restaurant.get('delivery'):
-            services.append("delivery")
-        if services:
-            info += f"They offer {', '.join(services)}. "
-        
-        if restaurant.get('reservable'):
-            info += "Reservations are available. "
-        
-        # Add editorial summary if available
-        if restaurant.get('editorial_summary'):
-            info += f"\n\nHere's what Google says: {restaurant['editorial_summary']} "
-        
-        # Add top reviews
-        if restaurant.get('reviews'):
-            info += "\n\nHere are some recent customer reviews:\n"
-            for i, review in enumerate(restaurant['reviews'], 1):
-                info += f"\n{i}. {review['author']} rated it {review['rating']} stars"
-                if review['time']:
-                    info += f" {review['time']}"
-                info += f" and said: \"{review['text'][:150]}{'...' if len(review['text']) > 150 else ''}\""
-        
-        return info
+        if not restaurant:
+            return "I couldn't retrieve the restaurant details."
+            
+        try:
+            info = f"{restaurant.get('name', 'This restaurant')} "
+            
+            if restaurant.get('rating') and restaurant.get('user_ratings_total'):
+                info += f"has a rating of {restaurant['rating']} stars based on {restaurant['user_ratings_total']} reviews. "
+            elif restaurant.get('rating'):
+                info += f"has a rating of {restaurant['rating']} stars. "
+            
+            if restaurant.get('price_level'):
+                price_desc = ['inexpensive', 'moderate', 'expensive', 'very expensive']
+                price_idx = min(int(restaurant['price_level']) - 1, 3)
+                if price_idx >= 0:
+                    info += f"It's {price_desc[price_idx]}. "
+            
+            if restaurant.get('is_open_now') is not None:
+                status = "currently open" if restaurant['is_open_now'] else "currently closed"
+                info += f"The restaurant is {status}. "
+            
+            # Add service options
+            services = []
+            if restaurant.get('dine_in'):
+                services.append("dine-in")
+            if restaurant.get('takeout'):
+                services.append("takeout")
+            if restaurant.get('delivery'):
+                services.append("delivery")
+            if services:
+                info += f"They offer {', '.join(services)}. "
+            
+            if restaurant.get('reservable'):
+                info += "Reservations are available. "
+            
+            # Add editorial summary if available
+            if restaurant.get('editorial_summary'):
+                info += f"\n\nHere's what Google says: {restaurant['editorial_summary']} "
+            
+            # Add top reviews
+            if restaurant.get('reviews') and len(restaurant['reviews']) > 0:
+                info += "\n\nHere are some recent customer reviews:\n"
+                for i, review in enumerate(restaurant['reviews'], 1):
+                    try:
+                        review_text = review.get('text', '')
+                        if review_text:
+                            truncated_text = review_text[:150] + '...' if len(review_text) > 150 else review_text
+                            info += f"\n{i}. {review.get('author', 'A customer')} rated it {review.get('rating', 'N/A')} stars"
+                            if review.get('time'):
+                                info += f" {review['time']}"
+                            info += f' and said: "{truncated_text}"'
+                    except Exception as e:
+                        print(f"Error formatting review: {e}")
+                        continue
+            
+            return info
+            
+        except Exception as e:
+            print(f"Error formatting restaurant info: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return f"I found {restaurant.get('name', 'the restaurant')} but had trouble formatting the details."
     
     def format_phone_number_e164(self, phone: str) -> str:
         """Convert phone number to E.164 format for RetellAI"""
@@ -723,23 +775,38 @@ def retell_webhook():
             
             if restaurants:
                 # Get details for the first match
-                place_id = restaurants[0]['place_id']
+                place_id = restaurants[0].get('place_id')
+                
+                if not place_id:
+                    response = {
+                        'response': f"I found {restaurant_name} but couldn't get its details. Please try again."
+                    }
+                    return jsonify(response)
+                
+                print(f"Getting details for place_id: {place_id}")
                 details = agent.get_restaurant_details(place_id)
                 
                 if details:
-                    response_text = agent.format_restaurant_info(details)
-                    
-                    if details.get('phone'):
-                        response_text += f"\n\nTheir phone number is {details['phone']}. Would you like me to repeat that?"
-                    
-                    if details.get('website'):
-                        response_text += f" They also have a website for online reservations. "
-                    
-                    if details.get('hours'):
-                        response_text += "\n\nWould you like to hear their hours of operation?"
-                    
-                    response = {'response': response_text}
-                    return jsonify(response)
+                    try:
+                        response_text = agent.format_restaurant_info(details)
+                        
+                        if details.get('phone'):
+                            response_text += f"\n\nTheir phone number is {details['phone']}. Would you like me to repeat that?"
+                        
+                        if details.get('website'):
+                            response_text += f" They also have a website for online reservations. "
+                        
+                        if details.get('hours'):
+                            response_text += "\n\nWould you like to hear their hours of operation?"
+                        
+                        response = {'response': response_text}
+                        return jsonify(response)
+                    except Exception as e:
+                        print(f"Error formatting restaurant details: {e}")
+                        response = {
+                            'response': f"I found {restaurant_name} but had trouble processing the details. The restaurant is rated {details.get('rating', 'N/A')} stars."
+                        }
+                        return jsonify(response)
                 else:
                     response = {
                         'response': "I found the restaurant but couldn't retrieve its detailed information. Would you like me to try again?"
@@ -938,6 +1005,58 @@ def retell_webhook():
             'response': "I encountered an error while processing your request. Please try again."
         }
         return jsonify(response)
+
+@app.route('/test-places-api', methods=['GET'])
+def test_places_api():
+    """Test Google Places API is working"""
+    
+    if not GOOGLE_PLACES_API_KEY:
+        return jsonify({'error': 'Google Places API key not set'}), 500
+    
+    # Test with a known restaurant
+    test_query = request.args.get('query', 'Pizza in New York')
+    
+    try:
+        # Test search
+        search_url = f"https://maps.googleapis.com/maps/api/place/textsearch/json"
+        params = {
+            'query': test_query,
+            'key': GOOGLE_PLACES_API_KEY
+        }
+        
+        search_response = requests.get(search_url, params=params, timeout=5)
+        search_data = search_response.json()
+        
+        result = {
+            'search_status': search_data.get('status'),
+            'search_results_count': len(search_data.get('results', [])),
+            'api_key_first_10': GOOGLE_PLACES_API_KEY[:10] + '...'
+        }
+        
+        if search_data.get('status') == 'OK' and search_data.get('results'):
+            # Try to get details for first result
+            first_place = search_data['results'][0]
+            place_id = first_place.get('place_id')
+            
+            if place_id:
+                details_url = f"https://maps.googleapis.com/maps/api/place/details/json"
+                details_params = {
+                    'place_id': place_id,
+                    'fields': 'name,rating,formatted_phone_number',
+                    'key': GOOGLE_PLACES_API_KEY
+                }
+                
+                details_response = requests.get(details_url, params=details_params, timeout=5)
+                details_data = details_response.json()
+                
+                result['details_status'] = details_data.get('status')
+                if details_data.get('status') == 'OK':
+                    result['sample_restaurant'] = details_data.get('result', {})
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({'error': str(e), 'api_key_set': bool(GOOGLE_PLACES_API_KEY)}), 500
 
 @app.route('/force-check-all', methods=['GET'])
 def force_check_all():
