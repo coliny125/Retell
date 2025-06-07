@@ -242,10 +242,27 @@ class RestaurantAgent:
                             special_requests: str = None) -> Dict:
         """Initiates an outbound call to make a reservation"""
         
-        if not RETELL_API_KEY or not RESTAURANT_CALLER_AGENT_ID:
+        print(f"make_reservation_call called with: restaurant={restaurant_name}, date={date}, time={time}")
+        print(f"Environment check: RETELL_API_KEY={'SET' if RETELL_API_KEY else 'NOT SET'}")
+        print(f"Environment check: RESTAURANT_CALLER_AGENT_ID={RESTAURANT_CALLER_AGENT_ID or 'NOT SET'}")
+        print(f"Environment check: RETELL_PHONE_NUMBER={RETELL_PHONE_NUMBER or 'NOT SET'}")
+        
+        if not RETELL_API_KEY:
             return {
                 'success': False,
-                'message': "I'm not configured to make outbound calls. Please call the restaurant directly."
+                'message': "I'm not configured with a RetellAI API key. Please set RETELL_API_KEY environment variable."
+            }
+            
+        if not RESTAURANT_CALLER_AGENT_ID:
+            return {
+                'success': False,
+                'message': "I'm not configured with a Restaurant Caller Agent ID. Please set RESTAURANT_CALLER_AGENT_ID environment variable."
+            }
+            
+        if not RETELL_PHONE_NUMBER:
+            return {
+                'success': False,
+                'message': "I'm not configured with a phone number. Please set RETELL_PHONE_NUMBER environment variable."
             }
         
         # Validate customer information
@@ -311,6 +328,7 @@ class RestaurantAgent:
             'special_requests': special_requests or 'none'
         }
         
+        # Prepare the API call data
         data = {
             'from_number': RETELL_PHONE_NUMBER,
             'to_number': phone_e164,
@@ -324,12 +342,20 @@ class RestaurantAgent:
             'dynamic_variables': dynamic_variables
         }
         
+        print(f"Making RetellAI API call:")
+        print(f"URL: https://api.retellai.com/v1/create-phone-call")
+        print(f"Headers: {headers}")
+        print(f"Data: {json.dumps(data, indent=2)}")
+        
         try:
             response = requests.post(
-                'https://api.retellai.com/v2/create-phone-call',
+                'https://api.retellai.com/v1/create-phone-call',  # Changed from v2 to v1
                 headers=headers,
                 json=data
             )
+            
+            print(f"RetellAI API Response Code: {response.status_code}")
+            print(f"RetellAI API Response: {response.text}")
             
             if response.status_code in [200, 201]:
                 call_data = response.json()
@@ -344,9 +370,19 @@ class RestaurantAgent:
                 }
             else:
                 print(f"RetellAI API error: {response.status_code} - {response.text}")
+                error_msg = "I encountered an error trying to call the restaurant."
+                
+                # Parse specific error messages
+                try:
+                    error_data = response.json()
+                    if 'message' in error_data:
+                        error_msg += f" Error: {error_data['message']}"
+                except:
+                    pass
+                    
                 return {
                     'success': False,
-                    'message': "I encountered an error trying to call the restaurant. Would you like me to provide their number so you can call directly?"
+                    'message': f"{error_msg} Would you like me to provide their number so you can call directly?"
                 }
                 
         except Exception as e:
@@ -717,6 +753,17 @@ def retell_call_webhook():
     except Exception as e:
         print(f"Error in retell webhook: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/debug-env', methods=['GET'])
+def debug_env():
+    """Debug endpoint to check environment variables"""
+    return jsonify({
+        'RETELL_API_KEY_set': bool(RETELL_API_KEY),
+        'RETELL_API_KEY_preview': f"{RETELL_API_KEY[:10]}..." if RETELL_API_KEY else "NOT SET",
+        'RESTAURANT_CALLER_AGENT_ID_set': bool(RESTAURANT_CALLER_AGENT_ID),
+        'RESTAURANT_CALLER_AGENT_ID': RESTAURANT_CALLER_AGENT_ID or "NOT SET",
+        'RETELL_PHONE_NUMBER': RETELL_PHONE_NUMBER or "NOT SET"
+    })
 
 @app.route('/health', methods=['GET'])
 def health_check():
