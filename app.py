@@ -225,17 +225,27 @@ class RestaurantAgent:
     
     def format_phone_number_e164(self, phone: str) -> str:
         """Convert phone number to E.164 format for RetellAI"""
+        if not phone:
+            print("WARNING: No phone number provided")
+            return None
+            
+        print(f"Formatting phone number: {phone}")
+        
         # Remove all non-digit characters
         phone_digits = ''.join(filter(str.isdigit, phone))
+        print(f"Digits only: {phone_digits}")
         
         # Assume US number if 10 digits without country code
         if len(phone_digits) == 10:
-            return f"+1{phone_digits}"
+            formatted = f"+1{phone_digits}"
         elif len(phone_digits) == 11 and phone_digits.startswith('1'):
-            return f"+{phone_digits}"
+            formatted = f"+{phone_digits}"
         else:
             # Try to use as-is with + prefix
-            return f"+{phone_digits}"
+            formatted = f"+{phone_digits}"
+            
+        print(f"Formatted to E.164: {formatted}")
+        return formatted
     
     def make_reservation_call(self, restaurant_name: str, date: str, time: str, party_size: int, 
                             customer_name: str, customer_phone: str, location: str = None, 
@@ -274,26 +284,41 @@ class RestaurantAgent:
         
         # First, find the restaurant and get its phone number
         search_query = f"{restaurant_name} {location}" if location else restaurant_name
-        restaurants = self.search_restaurants(search_query)
+        print(f"Searching for restaurant: {search_query}")
         
-        if not restaurants:
-            return {
-                'success': False,
-                'message': f"I couldn't find {restaurant_name}. Could you provide more details about its location?"
+        # Handle test case
+        if restaurant_name.lower() == "test" or restaurant_name.lower() == "test restaurant":
+            print("TEST MODE: Using test restaurant details")
+            details = {
+                'name': 'Test Restaurant',
+                'phone': '(555) 123-4567'  # Test phone number
             }
+            phone_e164 = '+15551234567'
+        else:
+            restaurants = self.search_restaurants(search_query)
+            
+            if not restaurants:
+                return {
+                    'success': False,
+                    'message': f"I couldn't find {restaurant_name}. Could you provide more details about its location?"
+                }
+            
+            # Get restaurant details
+            place_id = restaurants[0]['place_id']
+            details = self.get_restaurant_details(place_id)
+            
+            if not details or not details.get('phone'):
+                return {
+                    'success': False,
+                    'message': f"I found {restaurant_name} but couldn't get their phone number. Would you like to try another restaurant?"
+                }
+            
+            # Format phone number for API
+            phone_e164 = self.format_phone_number_e164(details['phone'])
         
-        # Get restaurant details
-        place_id = restaurants[0]['place_id']
-        details = self.get_restaurant_details(place_id)
-        
-        if not details or not details.get('phone'):
-            return {
-                'success': False,
-                'message': f"I found {restaurant_name} but couldn't get their phone number. Would you like to try another restaurant?"
-            }
-        
-        # Format phone number for API
-        phone_e164 = self.format_phone_number_e164(details['phone'])
+        print(f"Restaurant found: {details['name']}")
+        print(f"Restaurant phone (original): {details['phone']}")
+        print(f"Restaurant phone (E.164): {phone_e164}")
         
         # Create a unique reservation ID
         reservation_id = str(uuid.uuid4())
@@ -301,6 +326,7 @@ class RestaurantAgent:
         # Store reservation details with caller's call ID for real-time updates
         active_reservations[reservation_id] = {
             'restaurant_name': details['name'],
+            'restaurant_phone': phone_e164,
             'customer_name': customer_name,
             'customer_phone': customer_phone,
             'date': date,
@@ -328,6 +354,8 @@ class RestaurantAgent:
             'party_size': str(party_size),
             'special_requests': special_requests or 'none'
         }
+        
+        print(f"Dynamic variables being sent: {json.dumps(dynamic_variables, indent=2)}")
         
         # Prepare the API call data
         data = {
@@ -766,6 +794,51 @@ def retell_call_webhook():
     except Exception as e:
         print(f"Error in retell webhook: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/test-dynamic-variables', methods=['GET'])
+def test_dynamic_variables():
+    """Test endpoint to verify dynamic variables work"""
+    
+    if not RETELL_API_KEY or not RESTAURANT_CALLER_AGENT_ID:
+        return jsonify({'error': 'Missing API key or agent ID'}), 500
+    
+    headers = {
+        'Authorization': f'Bearer {RETELL_API_KEY}',
+        'Content-Type': 'application/json'
+    }
+    
+    # Test with dynamic variables
+    test_data = {
+        'from_number': RETELL_PHONE_NUMBER or '+14157774444',
+        'to_number': '+15551234567',  # Safe test number
+        'agent_id': RESTAURANT_CALLER_AGENT_ID,
+        'dynamic_variables': {
+            'restaurant_name': 'Test Restaurant',
+            'customer_name': 'Test Customer',
+            'customer_phone': '555-111-2222',
+            'date': 'tomorrow',
+            'time': '7:00 PM',
+            'party_size': '2',
+            'special_requests': 'none'
+        },
+        'metadata': {'test': True}
+    }
+    
+    try:
+        response = requests.post(
+            'https://api.retellai.com/v2/create-phone-call',
+            headers=headers,
+            json=test_data
+        )
+        
+        return jsonify({
+            'status_code': response.status_code,
+            'response': response.json() if response.status_code in [200, 201] else response.text,
+            'dynamic_variables_sent': test_data['dynamic_variables']
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/test-outbound-call', methods=['GET'])
 def test_outbound_call():
