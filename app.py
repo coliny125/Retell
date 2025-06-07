@@ -291,9 +291,9 @@ class RestaurantAgent:
             print("TEST MODE: Using test restaurant details")
             details = {
                 'name': 'Test Restaurant',
-                'phone': '(555) 123-4567'  # Test phone number
+                'phone': '(626) 698-9990'  # Test phone number
             }
-            phone_e164 = '+15551234567'
+            phone_e164 = '+16266989990'
         else:
             restaurants = self.search_restaurants(search_query)
             
